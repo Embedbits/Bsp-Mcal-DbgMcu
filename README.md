@@ -14,7 +14,59 @@ This README is the landing page and the **specification of the interface** (mast
 own README with everything that is specific to the family: the instances of the device, their settings and the status of
 the implementation.
 
-> **Status: design.** No implementation exists yet, the interface below is a proposal. Stories and branches follow.
+> **Status: STM32H5 implemented (version 0.1.0).** The interface below is implemented for STM32H5 in `DbgMcu_Port.h` /
+> `DbgMcu_Types.h` (branch `Dev/STM32H5`), the registers are accessed only by the private `DbgMcu_Reg.c/h`. Verified: unit
+> tests (Unity + RegMem, 54 test cases) on one preset of each of the 12 STM32H5 lines (H503, H523, H533, H543, H553, H562,
+> H563, H573, H5E4, H5E5, H5F4, H5F5) and a compilation of the module for all 12 lines. The integration tests
+> (`Tests/IntegrationTests`, 11 test cases) are only compiled (`STM32H503xB_IntegrationTest`,
+> `STM32H563xI_IntegrationTest`), they have not been run on a board yet. Other families: stories and branches follow.
+>
+> Notes of the STM32H5 implementation (a difference from the common proposal is marked as *deviation*):
+> - **Registers.** DBGMCU is at 0x44024000 for the software (0xE00E4000 for the debugger) on all 12 lines: `DBGMCU_IDCODE`,
+>   `DBGMCU_CR`, the freeze registers `APB1LFZR` (CMSIS `APB1FZR1`), `APB1HFZR` (`APB1FZR2`), `APB2FZR`, `APB3FZR`, `AHB1FZR`,
+>   `DBGMCU_SR` and `DBGMCU_DBG_AUTH_ACK`. The registers are reset only by a power-on reset, a system reset keeps the freeze
+>   bits and the low-power debug bits.
+> - **No Rcc, no Nvic (*deviation*).** The DBGMCU is clocked all the time (no enable bit in the RCC registers) and has no interrupt, so
+>   the module does not request a clock from the Rcc module and uses no other module. The only dependency is the RAL (CMSIS).
+> - **Identification.** `DbgMcu_Get_DeviceId` (12 bits) and `DbgMcu_Get_RevisionId` (16 bits) read `DBGMCU_IDCODE`, they work before
+>   `DbgMcu_Init`. Known values are the macros `DBGMCU_DEVICE_ID_xxx` (H503 0x474, H523/H533 0x478, H543/H553 0x47C,
+>   H562/H563/H573 0x484, H5Exx/H5Fxx 0x47A) and `DBGMCU_REVISION_ID_xxx` (A 0x1000, Z 0x1001, Y 0x1002, X 0x1007, W 0x100F).
+> - **Initialization.** Every function except the identification, `DbgMcu_Get_ModuleVersion`, `DbgMcu_Get_DefaultConfig`,
+>   `DbgMcu_Init`, `DbgMcu_Deinit` and `DbgMcu_Task` needs a successful `DbgMcu_Init`. `DbgMcu_Init` checks the whole configuration
+>   before the first write and then writes the complete state of the module: the bits of `DBGMCU_CR` (Stop, Standby, trace) and
+>   the freeze bits of all peripherals of the line (an inactive entry clears the bit), the bit `DCRT` and the reserved bits are never
+>   written. Every write is verified by a read-back; on a mismatch the module is deinitialized and an error is returned.
+>   `DbgMcu_Deinit` clears the bits owned by the module (also without a preceding init) and deinitializes the module.
+>   `DbgMcu_Task` has nothing to do.
+> - **Closed devices.** The access of the software to `DBGMCU_CR` and to the freeze registers is ignored on a device with the debug
+>   closed (RM0481, RM0517: accessible after a successful authentication), and the freeze bit of a secure peripheral can not be
+>   changed while the secure invasive debug is disabled. The read-back reports it as `DBGMCU_REQUEST_ERROR`.
+> - **Low-power debug (*deviation*).** `DBGMCU_CR` has the bits `DBG_STOP` and `DBG_STANDBY` only: the core is clocked in the Sleep mode and
+>   the debug connection is kept by the hardware. `DBGMCU_LP_SLEEP` stays in `dbgMcu_LowPower_t`, but `DbgMcu_Set_LowPowerDebug`
+>   and `DbgMcu_Get_LowPowerDebug` return `DBGMCU_REQUEST_ERROR` for it and `DbgMcu_Init` refuses `LowPowerSleep = DBGMCU_FUNCTION_ACTIVE`
+>   (nothing is written), so the example of this README (`LowPowerSleep` active) is not valid on STM32H5. The debug in the Standby mode
+>   disables the IO state retention and the exit from the Standby mode is a system reset.
+> - **Freeze list.** `dbgMcu_Periph_t` has the peripherals of the line only (the items exist if the CMSIS header has the freeze bit, which
+>   follows the reference manuals): common items are `IWDG`, `WWDG`, `TIM1`, `TIM2`, `TIM3`, `TIM6`, `TIM7`, `LPTIM1`, `LPTIM2`, `RTC`,
+>   `I2C1_TIMEOUT`, `I2C2_TIMEOUT`, `I3C1_TIMEOUT` and the channels 0 - 7 of `GPDMA1` and `GPDMA2`. Line specific items: `TIM4`, `TIM5`,
+>   `TIM8`, `TIM12`, `TIM15`, `I2C3_TIMEOUT` (not H503), `TIM13`, `TIM14`, `TIM16`, `TIM17`, `I2C4_TIMEOUT`, `LPTIM3` - `LPTIM6` (H562, H563,
+>   H573, H5Exx, H5Fxx), `I3C2_TIMEOUT` (H503, H523, H533, H543, H553, H5Exx, H5Fxx), `GPDMA1_CH8` - `GPDMA2_CH11` (H5Exx, H5Fxx). The list has
+>   30 items on H503, 36 on H523, H533, H543, H553, 44 on H562, H563, H573 and 53 on H5E4, H5E5, H5F4, H5F5. The note of RM0481 Rev 5
+>   names the I3C2 freeze bit for H543/H553 only, the module follows the CMSIS header and the securable peripheral table (I3C2 is on H523
+>   and H533 too); TIM13 and TIM14 are not on H523 and H533 (datasheet).
+> - **Functions without a signature in the proposal (*deviation*).** The short table lists `DbgMcu_Get_LowPowerDebug`, `DbgMcu_Get_PeriphFreeze` and
+>   `DbgMcu_Set_TraceEnable`, the C block does not declare them. The signatures follow the declared ones:
+>   `DbgMcu_Get_LowPowerDebug( dbgMcu_LowPower_t lowPower, dbgMcu_FunctionState_t * const state )`,
+>   `DbgMcu_Get_PeriphFreeze( dbgMcu_Periph_t periph, dbgMcu_FunctionState_t * const freeze )`,
+>   `DbgMcu_Set_TraceEnable( dbgMcu_TraceMode_t traceMode )`. The trace is a list (`DBGMCU_TRACE_DISABLED`, `_ASYNC`, `_SYNC_1BIT`, `_SYNC_2BIT`,
+>   `_SYNC_4BIT`: the trace clock, the pin enable and the pin assignment of `DBGMCU_CR`) because the pin assignment is a hardware choice; the
+>   configuration member is `TraceMode`.
+> - **Debug state (*deviation*).** `dbgMcu_DebugState_t` is a bit mask of `DBGMCU_DEBUG_STATE_ACCESS_ENABLED` (a debug access port is enabled,
+>   `DBGMCU_SR`), `DBGMCU_DEBUG_STATE_AUTH_HOST_MSG` and `DBGMCU_DEBUG_STATE_AUTH_DEVICE_MSG` (unread message in the debug authentication
+>   mailbox, `DBGMCU_DBG_AUTH_ACK`). The DBGMCU has no indication that a debugger is connected (the enabled port is not a connection),
+>   a bit for it is not offered.
+> - **Trace.** The trace sources and the instrumentation (`Dwt`, `Itm`) stay in the Core module, which still writes the DBGMCU trace bits
+>   itself; the module is not used by it yet.
 
 ---
 
@@ -71,7 +123,7 @@ master.
 
 | Family | Branch | Debug unit | Status |
 |---|---|---|---|
-| STM32H5 | `Dev/STM32H5` | `DBGMCU`: the device and revision identifier, the freeze registers of the AHB1 (GPDMA), APB1 (low and high), APB2 and APB3 peripherals, low-power debug, trace enable, the debug authentication state | planned (first) |
+| STM32H5 | `Dev/STM32H5` | `DBGMCU`: the device and revision identifier, the freeze registers of the AHB1 (GPDMA), APB1 (low and high), APB2 and APB3 peripherals, low-power debug, trace enable, the debug authentication state | implemented (0.1.0) |
 | STM32U5 | `Dev/STM32U5` | `DBGMCU` | planned |
 | STM32U3 | `Dev/STM32U3` | `DBGMCU` | planned |
 | STM32G4, STM32L4 | `Dev/STM32G4`, `Dev/STM32L4` | `DBGMCU`: the freeze registers of the APB1 / APB2 peripherals, the low-power debug bits | planned |
